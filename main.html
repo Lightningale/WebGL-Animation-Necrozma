@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html>
+
+<script id="vs_base" type="x-shader/x-vertex">#version 300 es
+
+in vec4 vPosition;
+in vec3 vNormal;
+in vec2 vTexCoord;
+
+out vec3 fPosition;
+out vec3 fNormal;
+out vec2 fTexCoord;
+out vec4 fClipSpacePos; // Pass clip space position to fragment shader
+
+uniform mat4 modelViewMatrix;
+uniform mat4 normalMatrix;
+uniform mat4 projectionMatrix;
+
+void main()
+{
+    // Transform vertex position into eye coordinates
+    fPosition = (modelViewMatrix * vPosition).xyz;
+
+    // Transform vertex normal into eye coordinates
+    fNormal = normalize((normalMatrix * vec4(vNormal, 0.0)).xyz);
+
+    // Pass through texture coordinates
+    fTexCoord = vTexCoord;
+
+    // Compute the vertex position in the clip space
+    fClipSpacePos = projectionMatrix * modelViewMatrix * vPosition;
+    gl_Position = fClipSpacePos;
+}
+</script>
+
+<script id="fs_base" type="x-shader/x-fragment">#version 300 es
+
+    precision mediump float;
+    
+    uniform sampler2D texture1;
+    uniform sampler2D texture2;
+    uniform vec4 ambientProduct, diffuseProduct, specularProduct;
+    uniform vec4 lightPosition;
+    uniform float shininess;
+    uniform int blendTextures;
+    uniform float blendFactor;
+    uniform int fade;
+    uniform int ads;
+    uniform float brightness;
+    in vec3 fPosition;
+    in vec3 fNormal;
+    in vec2 fTexCoord;
+    //in vec4 fClipSpacePos;
+
+    layout(location = 0) out vec4 fragColor;
+    
+    void main()
+    {
+        vec3 N = normalize(fNormal);
+        vec3 L = normalize(lightPosition.xyz - fPosition);
+        vec3 V = normalize(-fPosition);
+        vec3 R = reflect(-L, N);
+        vec3 H = normalize(L + V);
+        // Compute ADS
+        float reflectedDotViewShiny = pow(max(dot(R, V), 0.0), shininess);
+        float lightDotNormal = max(dot(L, N), 0.0);
+        vec4 ambient = ambientProduct;
+        vec4 diffuse = diffuseProduct * lightDotNormal;
+
+        //vec4 specular = specularProduct * reflectedDotViewShiny;
+        //Blinn Phong specular
+        float specularStrength = pow(max(dot(N, H), 0.0), shininess);
+        vec4 specular = specularProduct * specularStrength;
+        if(lightDotNormal < 0.0)
+        {
+            specular = vec4(0.0, 0.0, 0.0, 1.0);
+        }
+    
+        vec4 texColor = vec4(1.0); // white color if no texture blending 
+        if(blendTextures == 1)
+        {
+            texColor = texture(texture1, fTexCoord);
+        }
+        if(blendTextures == 2)
+        {
+            float rim = clamp(dot(V, N),0.0,1.0);//rim value approaches 0 near center, 1 near border
+            float threshold = 1.0 - blendFactor;//threshold controls percentage of replacement
+            float fadeRange =blendFactor*0.5; // range of fading
+            float edge0 = threshold - fadeRange;//borders of the transition region
+            float edge1 = threshold + fadeRange;
+            // Determine the blend weight
+            float weight = smoothstep(edge0, edge1, rim);//weight linearly increases as the angle is in the transition region
+            //  Compute a blend factor with a sharper transition near the center of the view
+            vec4 color1 = texture(texture1, fTexCoord);
+            vec4 color2 = texture(texture2, fTexCoord);
+            texColor = mix(color1, color2, weight);
+        }
+        fragColor = texColor;
+        
+
+
+        if(ads==1)
+        {
+            fragColor *= (ambient + diffuse + specular);
+        }
+        fragColor.a = 1.0; // Set alpha to opaque
+        //add fade effect
+        if(fade==1)
+        {   
+            // Calculate the rim factor using the dot product, which gives the cosine of the angle between the two vectors
+            float rim = dot(V, N);
+    
+            // Raise the rim to a power to tighten the effect around the edge 
+            rim = pow(rim,0.2); // The exponent can be adjusted for the desired effect
+    
+
+            fragColor.a=rim;
+        }
+    }
+</script>
+<script id="fs_2" type="x-shader/x-fragment">#version 300 es
+    precision mediump float;//sets floating point precision to medium
+
+    in vec3 fPosition;//pixel position in eye cs
+    in vec3 fNormal;//pixel normal in eye cs
+    in vec2 fTexCoord;//pixel coordinate in texture
+    uniform float uTime;//timestamp passed from program
+    layout(location = 0) out vec4 fragColor;//shader output of pixel color
+    vec3 hsv2rgb(vec3 c) {// Function to convert HSV colors to RGB. c.x is hue, y is saturation, z is brightness
+        vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);//factors for transforming hue value into r,g,b values
+        //values in K transform hue value to rgb fields,
+        //the fraction retrieves the color's offset in it's color sector,
+        //scale up by 6 to map to 6 rgb color wheel sectors,
+        //minus 3 to get distance from next primary color.
+        vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+        //mix the color with white(full saturation) according to saturation value, and multiply by brightness
+        return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+    }
+
+    void main()//main function
+    {
+        vec3 N = normalize(fNormal);//normalized normal vector
+        vec3 V = normalize(-fPosition);//normalized position vector
+        float rim = dot(V, N);//angle of the normal to view direction, this splits the sphere surface to rings.higher value, more concentrated to center
+        float colorRim=pow(rim,9.0);//power the angle value to make the curve steeper, core region becomes smaller
+        float alphaRim=pow(rim,1.7);//a diffrent curve for fading out edge transparency
+        float hue = mix(0.05,0.5, colorRim); // Hue values from core to border in hsv. value near 0 is red, near 1 is purple 
+        float saturation=mix(1.0, 0.4, colorRim); // make color more saturated at center
+        vec3 col1 = hsv2rgb(vec3(hue, saturation,1.0)); // Convert HSV to RGB
+        vec3 col2 = vec3(0.3, 0.3,0.3);//ripple color to be added to base
+        
+        float ripple = (sin(10.0 * rim + uTime *0.005)+1.0)*0.5;//this creates a ripple that changes with the surface angle and time, like a ripple going from center to border
+        vec3 color=col1+col2*ripple;//mix two colors with the ripple value, add a rippling color wave to base
+        float alpha=pow(rim,0.7);//Fade out the alpha near rim to give a transparent edge.
+        fragColor = vec4(color,alphaRim);//output fragment color. 
+    }
+</script>
+<script type="text/javascript" src="Common/webgl-utils.js"></script>
+<script type="text/javascript" src="Common/initShaders.js"></script>
+
+<script type="text/javascript" src="Common/MV.js"></script>
+<script type="text/javascript" src="objects.js"></script>
+<script type="text/javascript" src="main.js"></script>
+<script type="text/javascript" src="components.js"></script>
+<script type="text/javascript" src="misc.js"></script>
+
+
+<body>
+<canvas id="gl-canvas" width="1024" height="1024">
+Oops ... your browser doesn't support the HTML5 canvas element
+</canvas>
+<br/>
+<p id="fpsCounter">FPS:</p>
+<!--
+<audio id="bgm" preload="auto">
+    <source src="UltraNecrozmaRemix.mp3" type="audio/mpeg">
+    Your browser does not support the audio element.
+</audio>
+<button id="playButton">Play</button>-->
+<br/>
+
+</body>
+</html>
